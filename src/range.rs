@@ -32,6 +32,12 @@ pub(crate) enum ResolvedRanges {
     Multiple(Vec<Range<u64>>),
 }
 
+enum ParsedRange {
+    Unparsable,
+    NotSatisfiable,
+    Parsed(Range<u64>),
+}
+
 /// Parses the byte-range-set in the range header as described in [RFC 7233 section
 /// 2.1](https://tools.ietf.org/html/rfc7233#section-2.1).
 pub(crate) fn parse(range: Option<&HeaderValue>, len: u64) -> ResolvedRanges {
@@ -48,52 +54,60 @@ pub(crate) fn parse(range: Option<&HeaderValue>, len: u64) -> ResolvedRanges {
     // byte-range-set  = 1#( byte-range-spec / suffix-byte-range-spec )
     let mut ranges: Vec<Range<u64>> = Vec::with_capacity(2);
     for r in bytes.split(',') {
-        // Trim OWS = *( SP / HTAB )
-        let r = r.trim_start_matches([' ', '\t']);
-
-        // Parse one of the following.
-        // byte-range-spec = first-byte-pos "-" [ last-byte-pos ]
-        // suffix-byte-range-spec = "-" suffix-length
-        let hyphen = match r.find('-') {
-            None => return ResolvedRanges::None, // unparseable.
-            Some(h) => h,
-        };
-        if hyphen == 0 {
-            // It's a suffix-byte-range-spec.
-            let last = match u64::from_str(&r[1..]) {
-                Err(_) => return ResolvedRanges::None, // unparseable
-                Ok(l) => l,
-            };
-            if last >= len {
-                continue; // this range is not satisfiable; skip.
-            }
-            ranges.push((len - last)..len);
-        } else {
-            let first = match u64::from_str(&r[0..hyphen]) {
-                Err(_) => return ResolvedRanges::None, // unparseable
-                Ok(f) => f,
-            };
-            let end = if r.len() > hyphen + 1 {
-                cmp::min(
-                    match u64::from_str(&r[hyphen + 1..]) {
-                        Err(_) => return ResolvedRanges::None, // unparseable
-                        Ok(l) => l,
-                    } + 1,
-                    len,
-                )
-            } else {
-                len // no end specified; use EOF.
-            };
-            if first >= end {
-                continue; // this range is not satisfiable; skip.
-            }
-            ranges.push(first..end);
+        match parse_range(r, len) {
+            ParsedRange::Unparsable => return ResolvedRanges::None,
+            ParsedRange::NotSatisfiable => continue,
+            ParsedRange::Parsed(range) => ranges.push(range),
         }
     }
     match ranges.len() {
         0 => ResolvedRanges::NotSatisfiable,
         1 => ResolvedRanges::Single(ranges.remove(0)),
         _ => ResolvedRanges::Multiple(ranges),
+    }
+}
+
+fn parse_range(r: &str, len: u64) -> ParsedRange {
+    // Trim OWS = *( SP / HTAB )
+    let r = r.trim_start_matches([' ', '\t']);
+
+    // Parse one of the following.
+    // byte-range-spec = first-byte-pos "-" [ last-byte-pos ]
+    // suffix-byte-range-spec = "-" suffix-length
+    let hyphen = match r.find('-') {
+        None => return ParsedRange::Unparsable,
+        Some(h) => h,
+    };
+    if hyphen == 0 {
+        // It's a suffix-byte-range-spec.
+        let last = match u64::from_str(&r[1..]) {
+            Err(_) => return ParsedRange::Unparsable,
+            Ok(l) => l,
+        };
+        if last >= len {
+            return ParsedRange::NotSatisfiable;
+        }
+        ParsedRange::Parsed((len - last)..len)
+    } else {
+        let first = match u64::from_str(&r[0..hyphen]) {
+            Err(_) => return ParsedRange::Unparsable,
+            Ok(f) => f,
+        };
+        let end = if r.len() > hyphen + 1 {
+            cmp::min(
+                match u64::from_str(&r[hyphen + 1..]) {
+                    Err(_) => return ParsedRange::Unparsable,
+                    Ok(l) => l,
+                } + 1,
+                len,
+            )
+        } else {
+            len // no end specified; use EOF.
+        };
+        if first >= end {
+            return ParsedRange::NotSatisfiable;
+        }
+        ParsedRange::Parsed(first..end)
     }
 }
 
