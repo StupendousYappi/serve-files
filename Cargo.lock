@@ -1062,7 +1062,7 @@ dependencies = [
 
 [[package]]
 name = "serve-files"
-version = "0.4.0-rc.2"
+version = "0.5.0-dev"
 dependencies = [
  "bytes",
  "criterion",
