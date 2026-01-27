@@ -199,59 +199,58 @@ fn serve_inner<
     let len = ent.len();
     let (range, include_entity_headers) = match range::parse(range_hdr, len) {
         range::ResolvedRanges::None => (0..len, true),
-        range::ResolvedRanges::Satisfiable(ranges) => {
-            if let [range] = &ranges[..] {
-                res = res.header(
-                    header::CONTENT_RANGE,
-                    unsafe_fmt_ascii_val!(
-                        MAX_DECIMAL_U64_BYTES * 3 + "bytes -/".len(),
-                        "bytes {}-{}/{}",
-                        range.start,
-                        range.end - 1,
-                        len
-                    ),
-                );
-                res = res.status(StatusCode::PARTIAL_CONTENT);
-                (range.clone(), include_entity_headers_on_range)
-            } else {
-                // Before serving multiple ranges via multipart/byteranges, estimate the total
-                // length. ("80" is the RFC's estimate of the size of each part's header.) If it's
-                // more than simply serving the whole entity, do that instead.
-                let est_len = ranges.iter().try_fold(0u64, |acc, r| {
-                    acc.checked_add(80)
-                        .and_then(|a| a.checked_add(r.end - r.start))
+        range::ResolvedRanges::Single(range) => {
+            res = res.header(
+                header::CONTENT_RANGE,
+                unsafe_fmt_ascii_val!(
+                    MAX_DECIMAL_U64_BYTES * 3 + "bytes -/".len(),
+                    "bytes {}-{}/{}",
+                    range.start,
+                    range.end - 1,
+                    len
+                ),
+            );
+            res = res.status(StatusCode::PARTIAL_CONTENT);
+            (range, include_entity_headers_on_range)
+        }
+        range::ResolvedRanges::Multiple(ranges) => {
+            // Before serving multiple ranges via multipart/byteranges, estimate the total
+            // length. ("80" is the RFC's estimate of the size of each part's header.) If it's
+            // more than simply serving the whole entity, do that instead.
+            let est_len = ranges.iter().try_fold(0u64, |acc, r| {
+                acc.checked_add(80)
+                    .and_then(|a| a.checked_add(r.end - r.start))
+            });
+            if matches!(est_len, Some(l) if l < len) {
+                let each_part_hdrs = include_entity_headers_on_range.then(|| {
+                    let mut h = HeaderMap::new();
+                    ent.add_headers(&mut h);
+                    h
                 });
-                if matches!(est_len, Some(l) if l < len) {
-                    let each_part_hdrs = include_entity_headers_on_range.then(|| {
-                        let mut h = HeaderMap::new();
-                        ent.add_headers(&mut h);
-                        h
-                    });
-                    let (res, part_headers, len) =
-                        match prepare_multipart(res, &ranges[..], len, each_part_hdrs) {
-                            Ok(v) => v,
-                            Err(MultipartLenOverflowError) => {
-                                return ServeInner::Simple(
-                                    Response::builder()
-                                        .status(StatusCode::PAYLOAD_TOO_LARGE)
-                                        .body(Body::from("Multipart response too large"))
-                                        .unwrap(),
-                                );
-                            }
-                        };
-                    if method == Method::HEAD {
-                        return ServeInner::Simple(res.body(Body::empty()).unwrap());
-                    }
-                    return ServeInner::Multipart {
-                        res,
-                        part_headers,
-                        ranges: ranges.into_vec(),
-                        len,
+                let (res, part_headers, len) =
+                    match prepare_multipart(res, &ranges[..], len, each_part_hdrs) {
+                        Ok(v) => v,
+                        Err(MultipartLenOverflowError) => {
+                            return ServeInner::Simple(
+                                Response::builder()
+                                    .status(StatusCode::PAYLOAD_TOO_LARGE)
+                                    .body(Body::from("Multipart response too large"))
+                                    .unwrap(),
+                            );
+                        }
                     };
+                if method == Method::HEAD {
+                    return ServeInner::Simple(res.body(Body::empty()).unwrap());
                 }
-
-                (0..len, true)
+                return ServeInner::Multipart {
+                    res,
+                    part_headers,
+                    ranges,
+                    len,
+                };
             }
+
+            (0..len, true)
         }
         range::ResolvedRanges::NotSatisfiable => {
             res = res.header(

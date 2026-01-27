@@ -477,7 +477,6 @@ dependencies = [
  "rand",
  "rapidhash",
  "reqwest",
- "smallvec",
  "socket2 0.5.10",
  "sync_wrapper",
  "tempfile",

@@ -27,7 +27,6 @@ httpdate = "1.0"
 memchr = "2.7"
 pin-project-lite = "0.2"
 rapidhash = "4.2"
-smallvec = "1"
 sync_wrapper = "1.0"
 tokio = { version = "1.49", features = ["rt-multi-thread"] }
 
