@@ -12,10 +12,8 @@ edition = "2021"
 rust-version = "1.88"
 
 [features]
-dir = []
 
 [package.metadata.docs.rs]
-features = ["dir"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
@@ -27,7 +25,6 @@ http = "1.4"
 http-body = "1.0"
 httpdate = "1.0"
 memchr = "2.7"
-mime = "0.3"
 pin-project = "1.1"
 rapidhash = "4.2"
 smallvec = "1"
@@ -60,6 +57,7 @@ socket2 = { version = "0.5.0" }
 tempfile = "3.1.0"
 tokio = { version = "1.39.0", features = ["macros", "sync"] }
 libc = "0.2"
+mime = "0.3"
 
 [profile.release]
 debug = true
@@ -81,4 +79,3 @@ harness = false
 
 [[example]]
 name = "serve_dir"
-required-features = ["dir"]

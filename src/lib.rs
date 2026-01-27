@@ -71,8 +71,6 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 mod body;
 
-#[cfg(feature = "dir")]
-#[cfg_attr(docsrs, doc(cfg(feature = "dir")))]
 pub mod dir;
 
 mod etag;

@@ -7,13 +7,11 @@
 // except according to those terms.
 
 //! Test program which serves the current directory on `http://127.0.0.1:1337/`.
-//! Note this requires `--features dir`.
 
 use http::header::{self, HeaderMap, HeaderValue};
 use http_serve::dir;
 use hyper_util::rt::TokioIo;
 use std::fmt::Write;
-use std::io::Write as RawWrite;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
