@@ -9,7 +9,7 @@ keywords = ["http", "file", "range"]
 categories = ["web-programming::http-server"]
 repository = "https://github.com/scottlamb/http-serve"
 edition = "2021"
-rust-version = "1.79"
+rust-version = "1.88"
 
 [features]
 dir = []
@@ -20,6 +20,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 bytes = "1.0"
+fixed-cache = { version = "0.1.7", features = ["rapidhash"] }
 futures-core = { version = "0.3.31", default-features = false }
 futures-util = { version = "0.3.31", default-features = false }
 http = "1.4"
@@ -28,6 +29,7 @@ httpdate = "1.0"
 memchr = "2.7"
 mime = "0.3"
 pin-project = "1.1"
+rapidhash = "4.2"
 smallvec = "1"
 sync_wrapper = "1.0"
 tokio = { version = "1.49", features = ["rt-multi-thread"] }

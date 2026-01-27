@@ -6,7 +6,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::convert::TryFrom;
 use std::fs::{File, Metadata};
 use std::io;
 use std::time::SystemTime;
@@ -20,8 +19,8 @@ pub trait FileExt {
     /// (like `std::os::unix::fs::FileExt::read_at`). The caller never uses the cursor, so this
     /// doesn't matter.
     ///
-    /// The implementation goes directly to `libc` or `winapi` to allow soundly reading into an
-    /// uninitialized buffer. This may change after
+    /// The windows implementation goes directly to `winapi` to allow soundly reading into an
+    /// uninitialized buffer. This can be changed and the implementations unified when
     /// [`read_buf`](https://github.com/rust-lang/rust/issues/78485) is stabilized, including buf
     /// equivalents of `read_at`/`seek_read`.
     fn read_range(&self, chunk_size: usize, offset: u64) -> io::Result<Vec<u8>>;
@@ -110,7 +109,7 @@ impl FileExt for std::fs::File {
     }
 }
 
-#[derive(Hash, Eq, PartialEq)]
+#[derive(Hash, Eq, PartialEq, Clone, Copy)]
 pub struct FileInfo {
     pub inode: u64,
     pub len: u64,
