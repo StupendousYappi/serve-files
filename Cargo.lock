@@ -468,7 +468,6 @@ dependencies = [
  "httpdate",
  "hyper",
  "hyper-util",
- "libc",
  "memchr",
  "mime",
  "mime_guess",

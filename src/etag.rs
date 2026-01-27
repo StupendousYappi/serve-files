@@ -36,7 +36,7 @@ struct List<'a> {
 }
 
 impl List<'_> {
-    fn from(l: &[u8]) -> List {
+    fn from(l: &'_ [u8]) -> List<'_> {
         List {
             remaining: l,
             corrupt: false,
