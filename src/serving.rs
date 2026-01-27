@@ -84,9 +84,11 @@ pub fn serve<Ent: Entity, BI>(
             ranges,
             len,
         } => res
-            .body(crate::body::Body(crate::body::BodyStream::Multipart(
-                MultipartStream::new(Box::new(entity), part_headers, ranges, len),
-            )))
+            .body(crate::body::Body {
+                stream: crate::body::BodyStream::Multipart {
+                    s: MultipartStream::new(Box::new(entity), part_headers, ranges, len),
+                },
+            })
             .expect("multipart response should be valid"),
     }
 }
@@ -267,9 +269,11 @@ fn serve_inner<
     );
     let body = match *method {
         Method::HEAD => Body::empty(),
-        _ => Body(crate::body::BodyStream::ExactLen(
-            crate::body::ExactLenStream::new(range.end - range.start, ent.get_range(range)),
-        )),
+        _ => Body {
+            stream: crate::body::BodyStream::ExactLen {
+                s: crate::body::ExactLenStream::new(range.end - range.start, ent.get_range(range)),
+            },
+        },
     };
     let mut res = res.body(body).unwrap();
     if include_entity_headers {

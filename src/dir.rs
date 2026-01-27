@@ -7,7 +7,6 @@
 // except according to those terms.
 
 //! Directory traversal on local filesystems.
-//! Directory traversal on local filesystems.
 
 use http::header::{self, HeaderMap, HeaderValue};
 use std::fs::File;
@@ -301,7 +300,6 @@ mod tests {
         .unwrap()
     }
 
-    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     async fn symlink_allowed_in_last_path_component() {
         let tmp = tempfile::tempdir().unwrap();
@@ -314,7 +312,6 @@ mod tests {
         .unwrap()
     }
 
-    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     async fn symlink_allowed_in_earlier_path_component() {
         let tmp = tempfile::tempdir().unwrap();

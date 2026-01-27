@@ -14,9 +14,13 @@ use sync_wrapper::SyncWrapper;
 
 use crate::BoxError;
 
-/// An [`http_body::Body`] implementation returned by [`crate::serve`].
-#[pin_project::pin_project]
-pub struct Body<D = bytes::Bytes, E = BoxError>(#[pin] pub(crate) BodyStream<D, E>);
+pin_project_lite::pin_project! {
+    /// An [`http_body::Body`] implementation returned by [`crate::serve`].
+    pub struct Body<D = bytes::Bytes, E = BoxError> {
+        #[pin]
+        pub(crate) stream: BodyStream<D, E>,
+    }
+}
 
 impl<D, E> http_body::Body for Body<D, E>
 where
@@ -33,27 +37,27 @@ where
     ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
         self.as_mut()
             .project()
-            .0
+            .stream
             .poll_next(cx)
             .map(|p| p.map(|o| o.map(http_body::Frame::data)))
     }
 
     fn size_hint(&self) -> http_body::SizeHint {
-        match &self.0 {
-            BodyStream::Once(Some(Ok(d))) => http_body::SizeHint::with_exact(
+        match &self.stream {
+            BodyStream::Once { chunk: Some(Ok(d)) } => http_body::SizeHint::with_exact(
                 u64::try_from(d.remaining()).expect("usize should fit in u64"),
             ),
-            BodyStream::Once(_) => http_body::SizeHint::with_exact(0),
-            BodyStream::ExactLen(l) => http_body::SizeHint::with_exact(l.remaining),
-            BodyStream::Multipart(s) => http_body::SizeHint::with_exact(s.remaining()),
+            BodyStream::Once { .. } => http_body::SizeHint::with_exact(0),
+            BodyStream::ExactLen { s } => http_body::SizeHint::with_exact(s.remaining),
+            BodyStream::Multipart { s } => http_body::SizeHint::with_exact(s.remaining()),
         }
     }
 
     fn is_end_stream(&self) -> bool {
-        match &self.0 {
-            BodyStream::Once(c) => c.is_none(),
-            BodyStream::ExactLen(l) => l.remaining == 0,
-            BodyStream::Multipart(s) => s.remaining() == 0,
+        match &self.stream {
+            BodyStream::Once { chunk } => chunk.is_none(),
+            BodyStream::ExactLen { s } => s.remaining == 0,
+            BodyStream::Multipart { s } => s.remaining() == 0,
         }
     }
 }
@@ -62,7 +66,9 @@ impl<D, E> Body<D, E> {
     /// Returns a 0-byte body.
     #[inline]
     pub fn empty() -> Self {
-        Self(BodyStream::Once(None))
+        Self {
+            stream: BodyStream::Once { chunk: None },
+        }
     }
 }
 
@@ -72,7 +78,11 @@ where
 {
     #[inline]
     fn from(value: &'static [u8]) -> Self {
-        Self(BodyStream::Once(Some(Ok(value.into()))))
+        Self {
+            stream: BodyStream::Once {
+                chunk: Some(Ok(value.into())),
+            },
+        }
     }
 }
 
@@ -82,7 +92,11 @@ where
 {
     #[inline]
     fn from(value: &'static str) -> Self {
-        Self(BodyStream::Once(Some(Ok(value.as_bytes().into()))))
+        Self {
+            stream: BodyStream::Once {
+                chunk: Some(Ok(value.as_bytes().into())),
+            },
+        }
     }
 }
 
@@ -92,7 +106,11 @@ where
 {
     #[inline]
     fn from(value: Vec<u8>) -> Self {
-        Self(BodyStream::Once(Some(Ok(value.into()))))
+        Self {
+            stream: BodyStream::Once {
+                chunk: Some(Ok(value.into())),
+            },
+        }
     }
 }
 
@@ -102,15 +120,29 @@ where
 {
     #[inline]
     fn from(value: String) -> Self {
-        Self(BodyStream::Once(Some(Ok(value.into_bytes().into()))))
+        Self {
+            stream: BodyStream::Once {
+                chunk: Some(Ok(value.into_bytes().into())),
+            },
+        }
     }
 }
 
-#[pin_project::pin_project(project = BodyStreamProj)]
-pub(crate) enum BodyStream<D, E> {
-    Once(Option<Result<D, E>>),
-    ExactLen(#[pin] ExactLenStream<D, E>),
-    Multipart(#[pin] crate::serving::MultipartStream<D, E>),
+pin_project_lite::pin_project! {
+    #[project = BodyStreamProj]
+    pub(crate) enum BodyStream<D, E> {
+        Once {
+            chunk: Option<Result<D, E>>,
+        },
+        ExactLen {
+            #[pin]
+            s: ExactLenStream<D, E>,
+        },
+        Multipart {
+            #[pin]
+            s: crate::serving::MultipartStream<D, E>,
+        },
+    }
 }
 
 impl<D, E> Stream for BodyStream<D, E>
@@ -125,9 +157,9 @@ where
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Result<D, E>>> {
         match self.project() {
-            BodyStreamProj::Once(c) => Poll::Ready(c.take()),
-            BodyStreamProj::ExactLen(s) => s.poll_next(cx),
-            BodyStreamProj::Multipart(s) => s.poll_next(cx),
+            BodyStreamProj::Once { chunk } => Poll::Ready(chunk.take()),
+            BodyStreamProj::ExactLen { s } => s.poll_next(cx),
+            BodyStreamProj::Multipart { s } => s.poll_next(cx),
         }
     }
 }
