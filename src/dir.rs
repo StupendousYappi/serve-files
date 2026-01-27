@@ -10,13 +10,9 @@
 //! Currently Unix-only. Gated behind the `dir` feature.
 
 use http::header::{self, HeaderMap, HeaderValue};
-use memchr::memchr;
-use std::convert::TryInto;
-use std::ffi::CStr;
 use std::fs::File;
 use std::io::{Error, ErrorKind};
-use std::os::unix::{ffi::OsStrExt, io::FromRawFd};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// A builder for a `FsDir`.
@@ -42,7 +38,7 @@ impl FsDirBuilder {
 /// A base directory for local filesystem traversal.
 pub struct FsDir {
     auto_gzip: bool,
-    fd: std::os::unix::io::RawFd,
+    dirpath: PathBuf,
 }
 
 impl FsDir {
@@ -52,29 +48,14 @@ impl FsDir {
     }
 
     fn open(path: &Path, auto_gzip: bool) -> Result<Arc<Self>, Error> {
-        let path = path.as_os_str().as_bytes();
-        if memchr(0, path).is_some() {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                "path contains NUL byte",
-            ));
+        let metadata = std::fs::metadata(path)?;
+        if !metadata.is_dir() {
+            return Err(Error::new(ErrorKind::NotADirectory, "not a directory"));
         }
-        if path.len() >= libc::PATH_MAX.try_into().unwrap() {
-            return Err(Error::new(ErrorKind::InvalidInput, "path is too long"));
-        }
-        let mut buf = [0u8; libc::PATH_MAX as usize];
-        unsafe { std::ptr::copy_nonoverlapping(path.as_ptr(), buf.as_mut_ptr(), path.len()) };
-        let fd = unsafe {
-            libc::open(
-                buf.as_ptr() as *const libc::c_char,
-                libc::O_DIRECTORY | libc::O_CLOEXEC,
-                0,
-            )
-        };
-        if fd < 0 {
-            return Err(Error::last_os_error());
-        }
-        Ok(Arc::new(FsDir { auto_gzip, fd }))
+        Ok(Arc::new(FsDir {
+            auto_gzip,
+            dirpath: path.to_path_buf(),
+        }))
     }
 
     /// Opens a path within this base directory.
@@ -89,21 +70,15 @@ impl FsDir {
         if let Err(e) = validate_path(path) {
             return Err(Error::new(ErrorKind::InvalidInput, e));
         }
-        let mut buf = Vec::with_capacity(path.len() + b".gz\0".len());
-        buf.extend_from_slice(path.as_bytes());
+        let path = path.to_string();
         let should_gzip = self.auto_gzip && super::should_gzip(req_hdrs);
         tokio::task::spawn_blocking(move || -> Result<Node, Error> {
             if should_gzip {
-                let path_len = buf.len();
-                buf.extend_from_slice(&b".gz\0"[..]);
-                match self.open_file(
-                    // This is safe because we've ensured in validate_path that there are no
-                    // interior NULs, and we've just appended a NUL.
-                    unsafe { CStr::from_bytes_with_nul_unchecked(&buf[..]) },
-                ) {
+                let gz_path = format!("{}.gz", path);
+                match self.open_file(&gz_path) {
                     Ok(file) => {
                         let metadata = file.metadata()?;
-                        if !metadata.is_dir() {
+                        if metadata.is_file() {
                             return Ok(Node {
                                 file,
                                 metadata,
@@ -115,15 +90,13 @@ impl FsDir {
                     Err(ref e) if e.kind() == ErrorKind::NotFound => {}
                     Err(e) => return Err(e),
                 };
-                buf.truncate(path_len);
             }
 
-            buf.push(b'\0');
-
-            // As in the case above, we've ensured buf contains exactly one NUL, at the end.
-            let p = unsafe { CStr::from_bytes_with_nul_unchecked(&buf[..]) };
-            let file = self.open_file(p)?;
+            let file = self.open_file(&path)?;
             let metadata = file.metadata()?;
+            if !metadata.is_file() {
+                return Err(Error::new(ErrorKind::InvalidInput, "not a regular file"));
+            }
             Ok(Node {
                 file,
                 metadata,
@@ -137,19 +110,8 @@ impl FsDir {
 
     /// Opens the given file with a path relative to this directory.
     /// Performs the blocking I/O directly from this thread.
-    fn open_file(&self, path: &CStr) -> Result<File, Error> {
-        let fd =
-            unsafe { libc::openat(self.fd, path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC, 0) };
-        if fd < 0 {
-            return Err(Error::last_os_error());
-        }
-        Ok(unsafe { File::from_raw_fd(fd) })
-    }
-}
-
-impl Drop for FsDir {
-    fn drop(&mut self) {
-        unsafe { libc::close(self.fd) };
+    fn open_file(&self, path: &str) -> Result<File, Error> {
+        File::open(self.dirpath.join(path))
     }
 }
 
@@ -292,6 +254,18 @@ mod tests {
         };
         assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
         assert_eq!(e.to_string(), "path is absolute");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn not_a_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("file.txt");
+        File::create(&path).unwrap();
+        let e = match FsDir::builder().for_path(&path) {
+            Ok(_) => panic!("should have failed"),
+            Err(e) => e,
+        };
+        assert_eq!(e.kind(), std::io::ErrorKind::NotADirectory);
     }
 
     #[tokio::test(flavor = "multi_thread")]

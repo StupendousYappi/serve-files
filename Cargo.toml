@@ -35,7 +35,6 @@ sync_wrapper = "1.0"
 tokio = { version = "1.49", features = ["rt-multi-thread"] }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3.6", features = [
@@ -60,6 +59,7 @@ reqwest = { version = "0.12.7", default-features = false, features = ["gzip"] }
 socket2 = { version = "0.5.0" }
 tempfile = "3.1.0"
 tokio = { version = "1.39.0", features = ["macros", "sync"] }
+libc = "0.2"
 
 [profile.release]
 debug = true
@@ -73,6 +73,10 @@ harness = false
 
 [[bench]]
 name = "inmem"
+harness = false
+
+[[bench]]
+name = "openat"
 harness = false
 
 [[example]]
