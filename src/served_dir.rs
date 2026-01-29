@@ -15,7 +15,7 @@ use crate::{BoxError, FileEntity};
 
 /// Provides servable `FileEntity` values for file paths within a directory.
 pub struct ServedDir {
-    auto_gzip: bool,
+    auto_compress: bool,
     dirpath: PathBuf,
     strip_prefix: Option<String>,
     known_extensions: Option<HashMap<String, HeaderValue>>,
@@ -58,29 +58,19 @@ impl ServedDir {
         }
 
         let full_path = self.dirpath.join(path);
-        let should_gzip = self.auto_gzip && super::should_gzip(req_hdrs);
-        let auto_gzip = self.auto_gzip;
+        let preferred = if self.auto_compress {
+            crate::detect_compression_support(req_hdrs)
+        } else {
+            crate::CompressionSupport::None
+        };
+        let auto_compress = self.auto_compress;
         let content_type: HeaderValue = self.get_content_type(&full_path);
 
         let node: Node = tokio::task::spawn_blocking(move || -> Result<Node, IOError> {
-            if should_gzip {
-                let result = Self::find_gzipped(&full_path)?;
-                if let Some(n) = result {
-                    return Ok(n);
-                }
-            }
-
-            let file = File::open(full_path)?;
-            let metadata = file.metadata()?;
-            if !metadata.is_file() {
-                return Err(IOError::new(ErrorKind::InvalidInput, "not a regular file"));
-            }
-            Ok(Node {
-                file,
-                metadata,
-                auto_gzip,
-                is_gzipped: false,
-            })
+            let mut node = Self::find_file(&full_path, preferred)?
+                .ok_or_else(|| IOError::new(ErrorKind::NotFound, "file not found"))?;
+            node.auto_compress = auto_compress;
+            Ok(node)
         })
         .await
         .unwrap_or_else(|e: tokio::task::JoinError| Err(e.into()))?;
@@ -178,32 +168,54 @@ impl ServedDir {
         guess.map(|s| HeaderValue::from_str(s).unwrap())
     }
 
-    fn find_gzipped(path: &Path) -> Result<Option<Node>, IOError> {
-        let mut gz_path = path.to_path_buf();
-        if let Some(name) = path.file_name() {
-            let mut new_name = name.to_os_string();
-            new_name.push(".gz");
-            gz_path.set_file_name(new_name);
-        } else {
-            return Ok(None);
-        }
-        match File::open(&gz_path) {
-            Ok(file) => {
-                let metadata = file.metadata()?;
-                if metadata.is_file() {
-                    return Ok(Some(Node {
-                        file,
-                        metadata,
-                        auto_gzip: true,
-                        is_gzipped: true,
-                    }));
-                } else {
-                    Ok(None)
+    fn find_file(
+        path: &Path,
+        supported: crate::CompressionSupport,
+    ) -> Result<Option<Node>, IOError> {
+        let try_path = |p: &Path, encoding: ContentEncoding| -> Result<Option<Node>, IOError> {
+            match File::open(p) {
+                Ok(file) => {
+                    let metadata = file.metadata()?;
+                    if metadata.is_file() {
+                        return Ok(Some(Node {
+                            file,
+                            metadata,
+                            auto_compress: false, // will be set by caller
+                            content_encoding: encoding,
+                        }));
+                    }
+                }
+                Err(ref e) if e.kind() == ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+            Ok(None)
+        };
+
+        if supported.brotli() {
+            let mut br_path = path.to_path_buf();
+            if let Some(name) = path.file_name() {
+                let mut new_name = name.to_os_string();
+                new_name.push(".br");
+                br_path.set_file_name(new_name);
+                if let Some(node) = try_path(&br_path, ContentEncoding::Brotli)? {
+                    return Ok(Some(node));
                 }
             }
-            Err(ref e) if e.kind() == ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e),
         }
+
+        if supported.gzip() {
+            let mut gz_path = path.to_path_buf();
+            if let Some(name) = path.file_name() {
+                let mut new_name = name.to_os_string();
+                new_name.push(".gz");
+                gz_path.set_file_name(new_name);
+                if let Some(node) = try_path(&gz_path, ContentEncoding::Gzip)? {
+                    return Ok(Some(node));
+                }
+            }
+        }
+
+        try_path(path, ContentEncoding::Identity)
     }
 
     /// Ensures path is safe: no NUL bytes, not absolute, no `..` segments.
@@ -233,7 +245,7 @@ impl ServedDir {
 /// A builder for [`ServedDir`].
 pub struct ServedDirBuilder {
     dirpath: PathBuf,
-    auto_gzip: bool,
+    auto_compress: bool,
     strip_prefix: Option<String>,
     known_extensions: Option<HashMap<String, HeaderValue>>,
     default_content_type: HeaderValue,
@@ -244,7 +256,7 @@ impl ServedDirBuilder {
     fn new(dirpath: PathBuf) -> Self {
         Self {
             dirpath,
-            auto_gzip: true,
+            auto_compress: true,
             strip_prefix: None,
             known_extensions: None,
             default_content_type: OCTET_STREAM.clone(),
@@ -252,10 +264,10 @@ impl ServedDirBuilder {
         }
     }
 
-    /// Sets whether to automatically serve gzipped versions of files.
+    /// Sets whether to automatically serve compressed versions of files.
     /// Defaults to `true`.
-    pub fn auto_gzip(mut self, auto_gzip: bool) -> Self {
-        self.auto_gzip = auto_gzip;
+    pub fn auto_compress(mut self, auto_compress: bool) -> Self {
+        self.auto_compress = auto_compress;
         self
     }
 
@@ -291,11 +303,32 @@ impl ServedDirBuilder {
     pub fn build(self) -> ServedDir {
         ServedDir {
             dirpath: self.dirpath,
-            auto_gzip: self.auto_gzip,
+            auto_compress: self.auto_compress,
             strip_prefix: self.strip_prefix,
             known_extensions: self.known_extensions,
             default_content_type: self.default_content_type,
             common_headers: self.common_headers,
+        }
+    }
+}
+
+enum ContentEncoding {
+    Gzip,
+    Brotli,
+    Identity,
+}
+
+impl ContentEncoding {
+    /// Returns the encoding this file is assumed to have applied to the caller's request.
+    /// E.g., if automatic gzip compression is enabled and `index.html.gz` was found when the
+    /// caller requested `index.html`, this will return `Some("gzip")`. If the caller requests
+    /// `index.html.gz`, this will return `None` because the gzip encoding is built in to the
+    /// caller's request.
+    fn get_header_value(&self) -> Option<HeaderValue> {
+        match self {
+            ContentEncoding::Gzip => Some(HeaderValue::from_static("gzip")),
+            ContentEncoding::Brotli => Some(HeaderValue::from_static("br")),
+            ContentEncoding::Identity => None,
         }
     }
 }
@@ -310,8 +343,8 @@ impl ServedDirBuilder {
 pub struct Node {
     file: std::fs::File,
     metadata: std::fs::Metadata,
-    auto_gzip: bool,
-    is_gzipped: bool,
+    auto_compress: bool,
+    content_encoding: ContentEncoding,
 }
 
 impl Node {
@@ -336,10 +369,10 @@ impl Node {
             + From<Box<dyn std::error::Error + Send + Sync>>,
     {
         // Add `Content-Encoding` and `Vary` headers for the encoding to `hdrs`.
-        if let Some(e) = self.encoding() {
-            headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static(e));
+        if let Some(val) = self.content_encoding.get_header_value() {
+            headers.insert(header::CONTENT_ENCODING, val);
         }
-        if self.auto_gzip {
+        if self.auto_compress {
             headers.insert(header::VARY, HeaderValue::from_static("accept-encoding"));
         }
 
@@ -351,22 +384,9 @@ impl Node {
         &self.metadata
     }
 
-    /// Returns the encoding this file is assumed to have applied to the caller's request.
-    /// E.g., if automatic gzip compression is enabled and `index.html.gz` was found when the
-    /// caller requested `index.html`, this will return `Some("gzip")`. If the caller requests
-    /// `index.html.gz`, this will return `None` because the gzip encoding is built in to the
-    /// caller's request.
-    pub fn encoding(&self) -> Option<&'static str> {
-        if self.is_gzipped {
-            Some("gzip")
-        } else {
-            None
-        }
-    }
-
     /// Returns true iff the content varies with the request's `Accept-Encoding` header value.
     pub fn encoding_varies(&self) -> bool {
-        self.auto_gzip
+        self.auto_compress
     }
 }
 
@@ -430,12 +450,13 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_served_dir_auto_gzip() {
+    async fn test_served_dir_auto_compress() {
         let context = TestContext::new();
         context.write_file("test.txt", "plain text");
         context.write_file("test.txt.gz", "fake gzip content");
+        context.write_file("test.txt.br", "fake brotli content");
 
-        // 1. auto_gzip enabled (default), Accept-Encoding: gzip
+        // 1. auto_compress enabled (default), Accept-Encoding: gzip
         let served_dir = context.builder.build();
         let mut hdrs = HeaderMap::new();
         hdrs.insert(
@@ -447,20 +468,37 @@ mod tests {
         assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "gzip");
         assert_eq!(e.read_body().await.unwrap(), "fake gzip content");
 
-        // 2. auto_gzip enabled (default), no Accept-Encoding
+        // 2. auto_compress enabled (default), Accept-Encoding: br
+        let mut hdrs = HeaderMap::new();
+        hdrs.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("br"));
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "br");
+        assert_eq!(e.read_body().await.unwrap(), "fake brotli content");
+
+        // 3. auto_compress enabled (default), Accept-Encoding: br, gzip (prioritizes br)
+        let mut hdrs = HeaderMap::new();
+        hdrs.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("br, gzip"),
+        );
+        let e = served_dir.get("test.txt", &hdrs).await.unwrap();
+        assert_eq!(e.header(&header::CONTENT_ENCODING).unwrap(), "br");
+        assert_eq!(e.read_body().await.unwrap(), "fake brotli content");
+
+        // 4. auto_compress enabled (default), no Accept-Encoding
         let hdrs = HeaderMap::new();
         let e = served_dir.get("test.txt", &hdrs).await.unwrap();
         assert!(e.header(&header::CONTENT_ENCODING).is_none());
         assert_eq!(e.read_body().await.unwrap(), "plain text");
 
-        // 3. auto_gzip disabled
+        // 5. auto_compress disabled
         let served_dir = ServedDir::builder(context.tmp.path().to_path_buf())
-            .auto_gzip(false)
+            .auto_compress(false)
             .build();
         let mut hdrs = HeaderMap::new();
         hdrs.insert(
             header::ACCEPT_ENCODING,
-            HeaderValue::from_static("gzip, deflate"),
+            HeaderValue::from_static("br, gzip"),
         );
 
         let e = served_dir.get("test.txt", &hdrs).await.unwrap();

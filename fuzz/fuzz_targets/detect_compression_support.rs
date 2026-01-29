@@ -8,5 +8,5 @@ fuzz_target!(|data: &[u8]| {
     };
     let mut map = http::HeaderMap::new();
     map.insert(http::header::ACCEPT_ENCODING, value);
-    let _ = serve_files::should_gzip(&map);
+    let _ = serve_files::detect_compression_support(&map);
 });

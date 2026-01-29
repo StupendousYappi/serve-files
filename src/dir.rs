@@ -71,7 +71,10 @@ impl FsDir {
             return Err(Error::new(ErrorKind::InvalidInput, e));
         }
         let path = path.to_string();
-        let should_gzip = self.auto_gzip && super::should_gzip(req_hdrs);
+        let should_gzip = match (self.auto_gzip, crate::detect_compression_support(req_hdrs)) {
+            (true, crate::CompressionSupport::Gzip) => true,
+            _ => false,
+        };
         tokio::task::spawn_blocking(move || -> Result<Node, Error> {
             if should_gzip {
                 let gz_path = format!("{}.gz", path);

@@ -28,8 +28,8 @@ path = ".."
 members = ["."]
 
 [[bin]]
-name = "should_gzip"
-path = "fuzz_targets/should_gzip.rs"
+name = "detect_compression_support"
+path = "fuzz_targets/detect_compression_support.rs"
 test = false
 doc = false
 

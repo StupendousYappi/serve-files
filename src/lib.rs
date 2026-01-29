@@ -36,14 +36,18 @@
 #![deny(missing_docs, clippy::print_stderr, clippy::print_stdout)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::Buf;
 use futures_core::Stream;
-use futures_util::StreamExt;
 use http::header::{self, HeaderMap, HeaderValue};
 use std::ops::Range;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::time::SystemTime;
+#[cfg(test)]
+use {
+    bytes::{Bytes, BytesMut},
+    futures_util::StreamExt,
+};
 
 /// Returns a HeaderValue for the given formatted data.
 /// Caller must make two guarantees:
@@ -187,22 +191,49 @@ fn parse_qvalue(s: &str) -> Result<u16, ()> {
     Ok(q)
 }
 
-/// Returns iff it's preferable to use `Content-Encoding: gzip` when responding to the given
-/// request, rather than no content coding.
+/// Preferred compression to use for a response.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum CompressionSupport {
+    /// Use gzip compression.
+    Gzip,
+    /// Use brotli compression
+    Brotli,
+    /// Use brotli if available, otherwise gzip
+    Both,
+    /// Do not use compression.
+    None,
+}
+
+impl CompressionSupport {
+    /// Returns true if Brotli compression is supported.
+    pub fn brotli(&self) -> bool {
+        matches!(self, CompressionSupport::Brotli | CompressionSupport::Both)
+    }
+
+    /// Returns true if Gzip compression is supported.
+    pub fn gzip(&self) -> bool {
+        matches!(self, CompressionSupport::Gzip | CompressionSupport::Both)
+    }
+}
+
+/// Returns the preferred compression to use when responding to the given request, if any.
 ///
-/// Use via `should_gzip(req.headers())`.
+/// Use via `detect_compression_support(req.headers())`.
 ///
 /// Follows the rules of [RFC 7231 section
 /// 5.3.4](https://tools.ietf.org/html/rfc7231#section-5.3.4).
-pub fn should_gzip(headers: &HeaderMap) -> bool {
+///
+/// Note that if both gzip and brotli are supported, brotli will be preferred by the server.
+pub fn detect_compression_support(headers: &HeaderMap) -> CompressionSupport {
     let v = match headers.get(header::ACCEPT_ENCODING) {
-        None => return false,
+        None => return CompressionSupport::None,
+        Some(v) if v.is_empty() => return CompressionSupport::None,
         Some(v) => v,
     };
-    let (mut gzip_q, mut identity_q, mut star_q) = (None, None, None);
+    let (mut gzip_q, mut br_q, mut identity_q, mut star_q) = (None, None, None, None);
     let parts = match v.to_str() {
         Ok(s) => s.split(','),
-        Err(_) => return false,
+        Err(_) => return CompressionSupport::None,
     };
     for qi in parts {
         // Parse.
@@ -220,7 +251,7 @@ pub fn should_gzip(headers: &HeaderMap) -> bool {
                     .strip_prefix("q=")
                     .and_then(|q| parse_qvalue(q).ok())
                 else {
-                    return false; // unparseable.
+                    return CompressionSupport::None; // unparseable.
                 };
                 quality = q;
             }
@@ -228,6 +259,8 @@ pub fn should_gzip(headers: &HeaderMap) -> bool {
 
         if coding == "gzip" {
             gzip_q = Some(quality);
+        } else if coding == "br" {
+            br_q = Some(quality);
         } else if coding == "identity" {
             identity_q = Some(quality);
         } else if coding == "*" {
@@ -236,14 +269,23 @@ pub fn should_gzip(headers: &HeaderMap) -> bool {
     }
 
     let gzip_q = gzip_q.or(star_q).unwrap_or(0);
+    let br_q = br_q.or(star_q).unwrap_or(0);
 
     // "If the representation has no content-coding, then it is
     // acceptable by default unless specifically excluded by the
     // Accept-Encoding field stating either "identity;q=0" or "*;q=0"
     // without a more specific entry for "identity"."
-    let identity_q = identity_q.or(star_q).unwrap_or(1);
+    let identity_q = identity_q.or(star_q).unwrap_or(0);
 
-    gzip_q > 0 && gzip_q >= identity_q
+    let use_gzip = gzip_q > 0 && gzip_q >= identity_q;
+    let use_br = br_q > 0 && br_q >= identity_q;
+
+    match (use_gzip, use_br) {
+        (true, false) => CompressionSupport::Gzip,
+        (false, true) => CompressionSupport::Brotli,
+        (true, true) => CompressionSupport::Both,
+        (false, false) => CompressionSupport::None,
+    }
 }
 
 // streaming_body and related types removed.
@@ -252,6 +294,7 @@ pub fn should_gzip(headers: &HeaderMap) -> bool {
 mod tests {
     use http::header::HeaderValue;
     use http::{self, header};
+    use pretty_assertions::assert_matches;
 
     fn ae_hdrs(value: &'static str) -> http::HeaderMap {
         let mut h = http::HeaderMap::new();
@@ -283,43 +326,99 @@ mod tests {
     }
 
     #[test]
-    fn should_gzip() {
+    fn detect_compression_support() {
+        use super::CompressionSupport;
         // "A request without an Accept-Encoding header field implies that the
         // user agent has no preferences regarding content-codings. Although
         // this allows the server to use any content-coding in a response, it
         // does not imply that the user agent will be able to correctly process
-        // all encodings." Identity seems safer; don't gzip.
-        assert!(!super::should_gzip(&header::HeaderMap::new()));
+        // all encodings." Identity seems safer; don't compress.
+        assert!(matches!(
+            super::detect_compression_support(&header::HeaderMap::new()),
+            CompressionSupport::None
+        ));
 
         // "If the representation's content-coding is one of the
         // content-codings listed in the Accept-Encoding field, then it is
         // acceptable unless it is accompanied by a qvalue of 0.  (As
         // defined in Section 5.3.1, a qvalue of 0 means "not acceptable".)"
-        assert!(super::should_gzip(&ae_hdrs("gzip")));
-        assert!(super::should_gzip(&ae_hdrs("gzip;q=0.001")));
-        assert!(!super::should_gzip(&ae_hdrs("gzip;q=0")));
+        assert_matches!(
+            super::detect_compression_support(&ae_hdrs("gzip")),
+            CompressionSupport::Gzip
+        );
+        assert_matches!(
+            super::detect_compression_support(&ae_hdrs("gzip;q=0.001")),
+            CompressionSupport::Gzip
+        );
+        assert_matches!(
+            super::detect_compression_support(&ae_hdrs("br;q=0.001")),
+            CompressionSupport::Brotli
+        );
+        assert_matches!(
+            super::detect_compression_support(&ae_hdrs("br, gzip")),
+            CompressionSupport::Both
+        );
+
+        assert_matches!(
+            super::detect_compression_support(&ae_hdrs("gzip;q=0")),
+            CompressionSupport::None
+        );
 
         // "An Accept-Encoding header field with a combined field-value that is
         // empty implies that the user agent does not want any content-coding in
         // response."
-        assert!(!super::should_gzip(&ae_hdrs("")));
+        assert_matches!(
+            super::detect_compression_support(&ae_hdrs("")),
+            CompressionSupport::None
+        );
 
-        // "The asterisk "*" symbol in an Accept-Encoding field
-        // matches any available content-coding not explicitly listed in the
-        // header field."
-        assert!(super::should_gzip(&ae_hdrs("*")));
-        assert!(!super::should_gzip(&ae_hdrs("gzip;q=0, *")));
-        assert!(super::should_gzip(&ae_hdrs("identity=q=0, *")));
+        // The asterisk "*" symbol matches any available content-coding not
+        // explicitly listed. identity is a content-coding.
+        // If * is q=1000, then identity_q=1000, and neither gzip nor br is
+        // strictly greater than 1000.
+        assert_matches!(
+            super::detect_compression_support(&ae_hdrs("*")),
+            CompressionSupport::Both
+        );
+        assert_matches!(
+            super::detect_compression_support(&ae_hdrs("gzip;q=0, *")),
+            CompressionSupport::Brotli
+        );
+        assert_matches!(
+            super::detect_compression_support(&ae_hdrs("identity;q=0, *")),
+            CompressionSupport::Both
+        );
 
         // "If multiple content-codings are acceptable, then the acceptable
         // content-coding with the highest non-zero qvalue is preferred."
-        assert!(super::should_gzip(&ae_hdrs("identity;q=0.5, gzip;q=1.0")));
-        assert!(!super::should_gzip(&ae_hdrs("identity;q=1.0, gzip;q=0.5")));
+        assert_matches!(
+            super::detect_compression_support(&ae_hdrs("identity;q=0.5, gzip;q=1.0")),
+            CompressionSupport::Gzip
+        );
+        assert_matches!(
+            super::detect_compression_support(&ae_hdrs("identity;q=1.0, gzip;q=0.5")),
+            CompressionSupport::None
+        );
+        assert_matches!(
+            super::detect_compression_support(&ae_hdrs("br;q=1.0, gzip;q=0.5, identity;q=0.1")),
+            CompressionSupport::Both
+        );
+        assert_matches!(
+            super::detect_compression_support(&ae_hdrs("br;q=0.5, gzip;q=1.0, identity;q=0.1")),
+            CompressionSupport::Both
+        );
 
         // "If an Accept-Encoding header field is present in a request
         // and none of the available representations for the response have a
         // content-coding that is listed as acceptable, the origin server SHOULD
         // send a response without any content-coding."
-        assert!(!super::should_gzip(&ae_hdrs("*;q=0")));
+        assert_matches!(
+            super::detect_compression_support(&ae_hdrs("*;q=0")),
+            CompressionSupport::None
+        );
+        assert_matches!(
+            super::detect_compression_support(&ae_hdrs("gzip;q=0.002")), // q=2
+            CompressionSupport::Gzip
+        );
     }
 }
