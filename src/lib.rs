@@ -191,7 +191,7 @@ fn parse_qvalue(s: &str) -> Result<u16, ()> {
     Ok(q)
 }
 
-/// Preferred compression to use for a response.
+/// The compression styles supported by the client of a request.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum CompressionSupport {
     /// Use gzip compression.
@@ -277,6 +277,11 @@ pub fn detect_compression_support(headers: &HeaderMap) -> CompressionSupport {
     // without a more specific entry for "identity"."
     let identity_q = identity_q.or(star_q).unwrap_or(0);
 
+    // The server will always have identity coding available, so if it's
+    // higher priority than another coding, there's no need to enable
+    // the other coding. According to the RFC, it's possible for a client
+    // to support other codings while not supporting identity coding, but
+    // that seems very unlikely in practice and we don't support that.
     let use_gzip = gzip_q > 0 && gzip_q >= identity_q;
     let use_br = br_q > 0 && br_q >= identity_q;
 
