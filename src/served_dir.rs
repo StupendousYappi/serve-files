@@ -359,7 +359,7 @@ impl Error for NotAFile {}
 /// The caller can inspect it as desired. If it is a directory, the caller might pass the result of
 /// `into_file()` to `nix::dir::Dir::from`. If it is a plain file, the caller might create an
 /// `serve_files::Entity` with `into_file_entity()`.
-pub struct Node {
+struct Node {
     path: PathBuf,
     metadata: std::fs::Metadata,
     auto_compress: bool,
@@ -368,14 +368,14 @@ pub struct Node {
 
 impl Node {
     /// Converts this node to a `std::fs::File`.
-    pub fn into_file(self) -> Result<std::fs::File, IOError> {
+    fn into_file(self) -> Result<std::fs::File, IOError> {
         File::open(&self.path)
     }
 
     /// Converts this node (which must represent a plain file) into a `FileEntity`.
     /// The caller is expected to supply all headers. The function `add_encoding_headers`
     /// may be useful.
-    pub fn into_file_entity<D, E>(
+    fn into_file_entity<D, E>(
         self,
         mut headers: HeaderMap,
     ) -> Result<crate::file::FileEntity<D, E>, IOError>
@@ -404,12 +404,12 @@ impl Node {
     }
 
     /// Returns the (already fetched) metadata for this node.
-    pub fn metadata(&self) -> &std::fs::Metadata {
+    fn metadata(&self) -> &std::fs::Metadata {
         &self.metadata
     }
 
     /// Returns true iff the content varies with the request's `Accept-Encoding` header value.
-    pub fn encoding_varies(&self) -> bool {
+    fn encoding_varies(&self) -> bool {
         self.auto_compress
     }
 }

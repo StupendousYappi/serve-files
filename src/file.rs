@@ -89,7 +89,7 @@ where
     /// This is an optimization for the case where the caller has already called `fstat(2)`.
     /// Note that on Windows, this still may perform a blocking file operation, so it should
     /// still be wrapped in [`tokio::task::block_in_place`].
-    pub fn new_with_metadata(
+    pub(crate) fn new_with_metadata(
         file: ::std::fs::File,
         metadata: &::std::fs::Metadata,
         headers: HeaderMap,
