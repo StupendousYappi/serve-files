@@ -73,5 +73,9 @@ harness = false
 name = "inmem"
 harness = false
 
+[[bench]]
+name = "metadata"
+harness = false
+
 [[example]]
 name = "serve_dir"

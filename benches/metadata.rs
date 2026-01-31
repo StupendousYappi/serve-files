@@ -7,6 +7,8 @@
 // except according to those terms.
 
 use criterion::{criterion_group, criterion_main, Criterion};
+use http::HeaderMap;
+use serve_files::served_dir::ServedDir;
 use std::fs::{self, File};
 use std::path::Path;
 
@@ -40,6 +42,25 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     group.bench_with_input("file_missing", &missing_path.as_path(), |b, path| {
         b.iter(|| file_metadata(path))
+    });
+
+    let served_dir = ServedDir::builder(tmpdir.path()).unwrap().build();
+    let hdrs = HeaderMap::new();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    group.bench_function("served_dir_exists", |b| {
+        b.to_async(&rt).iter(|| async {
+            served_dir.get("exists", &hdrs).await.unwrap();
+        })
+    });
+
+    group.bench_function("served_dir_missing", |b| {
+        b.to_async(&rt).iter(|| async {
+            served_dir.get("missing", &hdrs).await.unwrap_err();
+        })
     });
 
     group.finish();
