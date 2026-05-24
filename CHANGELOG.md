@@ -1,3 +1,11 @@
+# UNRELASED
+
+- Improved consistency of error logging between direct use and middleware use of `ServedDir`
+- Performance optimizations
+- Simplified `serve` function API
+- Renamed `ServedDirBuilder::new` to `ServedDir::builder`
+- Added optional support for in-memory caching of file content
+
 # 0.3.0
 
 - Improved examples, including adding more CLI options and adding an example

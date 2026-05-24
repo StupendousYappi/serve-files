@@ -119,3 +119,8 @@ harness = false
 name = "middleware"
 harness = false
 required-features = ["tower", "hyper"]
+
+[[bench]]
+name = "brotli_cache"
+harness = false
+required-features = ["runtime-compression"]
