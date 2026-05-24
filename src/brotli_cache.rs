@@ -109,7 +109,8 @@ impl BrotliCache {
             return Self::wrap_orig(path, extension);
         }
 
-        let file_info = tokio::task::block_in_place(|| crate::FileInfo::for_path(path))?;
+        //let file_info = tokio::task::block_in_place(|| crate::FileInfo::for_path(path))?;
+        let file_info = crate::FileInfo::for_path(path)?;
 
         // Skip compression if the file is too large.
         if file_info.len() > self.max_file_size {
